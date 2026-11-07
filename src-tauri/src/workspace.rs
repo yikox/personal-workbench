@@ -214,6 +214,15 @@ pub struct ResourceLink {
     pub kind: ResourceKind,
     pub path: String,
     pub alias: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DiscoveredDocument {
+    pub name: String,
+    pub path: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -436,7 +445,7 @@ fn is_recorded_link(
             _ => None,
         })
         .collect::<Vec<_>>();
-    if parts.len() != 4 || parts[0] != "项目" {
+    if parts.len() < 3 || parts[0] != "项目" {
         return Ok(false);
     }
     let dir = root.join(parts[0]).join(parts[1]);
@@ -450,6 +459,20 @@ fn is_recorded_link(
         Ok(p) => p,
         Err(_) => return Ok(false),
     };
+    if project.resources.iter().any(|resource| {
+        resource.kind == ResourceKind::Document
+            && resource.source_path.as_deref()
+                == relative
+                    .strip_prefix(Path::new(parts[0]).join(parts[1]))
+                    .ok()
+                    .and_then(Path::to_str)
+            && fs::canonicalize(root.join(&resource.path)).ok().as_deref() == Some(canonical_target)
+    }) {
+        return Ok(true);
+    }
+    if parts.len() != 4 {
+        return Ok(false);
+    }
     let kind = match parts[2] {
         "关联仓库" => ResourceKind::Repository,
         "关联文档" => ResourceKind::Document,
@@ -897,6 +920,102 @@ pub fn snapshot(root: impl AsRef<Path>) -> WorkspaceResult<Snapshot> {
     })
 }
 
+fn walk_markdown(
+    dir: &Path,
+    project_root: &Path,
+    relative_prefix: &str,
+    found: &mut Vec<DiscoveredDocument>,
+) -> WorkspaceResult<()> {
+    for entry in fs::read_dir(dir).map_err(|e| err("扫描项目文档失败", e))? {
+        let path = entry.map_err(|e| err("扫描项目文档失败", e))?.path();
+        let name = path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .ok_or("项目文件名不是有效 UTF-8")?;
+        let meta = fs::symlink_metadata(&path).map_err(|e| err("读取项目文档信息失败", e))?;
+        if meta.file_type().is_symlink() || name.starts_with('.') {
+            continue;
+        }
+        if meta.is_dir() {
+            if matches!(
+                name,
+                ".git"
+                    | "node_modules"
+                    | "dist"
+                    | "build"
+                    | "target"
+                    | "vendor"
+                    | "关联仓库"
+                    | "关联文档"
+                    | "关联附件"
+                    | "关联脚本"
+            ) {
+                continue;
+            }
+            walk_markdown(&path, project_root, relative_prefix, found)?;
+        } else if meta.is_file()
+            && !name.eq_ignore_ascii_case("AGENTS.md")
+            && (name.to_ascii_lowercase().ends_with(".md")
+                || name.to_ascii_lowercase().ends_with(".markdown"))
+        {
+            let suffix = relative_path(
+                path.strip_prefix(project_root)
+                    .map_err(|e| err("项目文档路径异常", e))?,
+            )?;
+            let relative = if relative_prefix.is_empty() {
+                suffix
+            } else if suffix.is_empty() {
+                relative_prefix.to_owned()
+            } else {
+                format!("{relative_prefix}/{suffix}")
+            };
+            found.push(DiscoveredDocument {
+                name: name.into(),
+                path: relative,
+            });
+        }
+    }
+    Ok(())
+}
+
+pub fn discover_markdown(
+    root: impl AsRef<Path>,
+    project_id: &str,
+) -> WorkspaceResult<Vec<DiscoveredDocument>> {
+    let root = root_path(root.as_ref())?;
+    validate_layout(&root)?;
+    let dir = project_dir(&root, project_id)?;
+    let project = read_project(&root, &dir)?;
+    let mut docs = Vec::new();
+    walk_markdown(&dir, &dir, "", &mut docs)?;
+    for link in project
+        .resources
+        .iter()
+        .filter(|link| link.kind == ResourceKind::Repository)
+    {
+        let target = resolve(&root, &link.path)?;
+        let link_path = link_path(&dir, ResourceKind::Repository, &link.alias);
+        if !fs::symlink_metadata(&link_path)
+            .map(|meta| meta.file_type().is_symlink())
+            .unwrap_or(false)
+            || fs::read_link(&link_path).ok().as_deref() != Some(target.as_path())
+        {
+            continue;
+        }
+        let meta = fs::symlink_metadata(&target).map_err(|e| err("读取关联仓库失败", e))?;
+        if meta.is_dir() && !meta.file_type().is_symlink() {
+            let prefix = format!(
+                "{}/{}",
+                ResourceKind::Repository.link_category(),
+                link.alias
+            );
+            walk_markdown(&target, &target, &prefix, &mut docs)?;
+        }
+    }
+    docs.sort_by(|a, b| a.path.cmp(&b.path));
+    Ok(docs)
+}
+
 pub fn create_temporary(root: impl AsRef<Path>, name: &str) -> WorkspaceResult<TemporaryDirectory> {
     validate_name(name)?;
     let root = root_path(root.as_ref())?;
@@ -1099,6 +1218,41 @@ fn plan_project_links(root: &Path, project: &Project) -> WorkspaceResult<Project
         }
     }
 
+    let mut source_links = Vec::new();
+    for resource in &project.resources {
+        let Some(source_path) = resource.source_path.as_deref() else {
+            continue;
+        };
+        if resource.kind != ResourceKind::Document {
+            return Err("只有文档资源可以记录项目原路径".into());
+        }
+        let relative = Path::new(source_path);
+        if source_path.is_empty()
+            || relative.is_absolute()
+            || relative
+                .components()
+                .any(|c| !matches!(c, Component::Normal(_)))
+        {
+            return Err(format!("项目原文档路径无效: {source_path}"));
+        }
+        let source = dir.join(relative);
+        if !source.starts_with(&dir) {
+            return Err("项目原文档路径越界".into());
+        }
+        let path_parts = relative
+            .iter()
+            .filter_map(|part| part.to_str())
+            .collect::<Vec<_>>();
+        let repository_alias =
+            if path_parts.len() >= 3 && path_parts[0] == ResourceKind::Repository.link_category() {
+                Some(path_parts[1].to_owned())
+            } else {
+                None
+            };
+        let target = resolve(root, &resource.path)?;
+        source_links.push((source, target, repository_alias));
+    }
+
     let mut changes = Vec::new();
     for kind in [
         ResourceKind::Repository,
@@ -1165,6 +1319,68 @@ fn plan_project_links(root: &Path, project: &Project) -> WorkspaceResult<Project
                 old_target: Some(old_target),
                 new_target: None,
             });
+        }
+    }
+    for (path, target, repository_alias) in source_links {
+        let mut parent = path.parent().ok_or("项目原文档路径无效")?.to_path_buf();
+        while parent != dir {
+            let meta = fs::symlink_metadata(&parent).map_err(|e| err("项目原文档父目录缺失", e))?;
+            if meta.file_type().is_symlink() {
+                let alias = repository_alias.as_deref().ok_or_else(|| {
+                    format!("项目原文档父目录是未登记的软链接: {}", parent.display())
+                })?;
+                if parent != link_path(&dir, ResourceKind::Repository, alias) {
+                    return Err(format!(
+                        "项目原文档父目录是未登记的软链接: {}",
+                        parent.display()
+                    ));
+                }
+                let repository = project
+                    .resources
+                    .iter()
+                    .find(|resource| {
+                        resource.kind == ResourceKind::Repository && resource.alias == alias
+                    })
+                    .ok_or("原文档所在仓库未登记")?;
+                if fs::read_link(&parent).map_err(|e| err("读取关联仓库链接失败", e))?
+                    != resolve(root, &repository.path)?
+                {
+                    return Err("原文档所在仓库链接已被修改".into());
+                }
+                break;
+            }
+            if !meta.is_dir() {
+                return Err(format!("项目原文档父目录无效: {}", parent.display()));
+            }
+            parent = parent.parent().ok_or("项目原文档路径越界")?.to_path_buf();
+        }
+        match fs::symlink_metadata(&path) {
+            Ok(meta) if meta.file_type().is_symlink() => {
+                let old = fs::read_link(&path).map_err(|e| err("读取项目原文档链接失败", e))?;
+                let old = if old.is_absolute() {
+                    old
+                } else {
+                    path.parent().unwrap().join(old)
+                };
+                if old != target {
+                    return Err(format!(
+                        "项目原文档链接目标已变化，拒绝覆盖: {}",
+                        path.display()
+                    ));
+                }
+            }
+            Ok(_) => {
+                return Err(format!(
+                    "项目原文档路径已被占用，拒绝覆盖: {}",
+                    path.display()
+                ))
+            }
+            Err(e) if e.kind() == io::ErrorKind::NotFound => changes.push(LinkChange {
+                path,
+                old_target: None,
+                new_target: Some(target),
+            }),
+            Err(e) => return Err(err("检查项目原文档路径失败", e)),
         }
     }
     Ok(ProjectLinkPlan {
@@ -1874,6 +2090,7 @@ where
         kind,
         path: resource_path.into(),
         alias: alias.into(),
+        source_path: None,
     });
     match after_link(&dir, &dst).and_then(|_| save_project(&dir, &p)) {
         Ok(p) => Ok(p),
@@ -1908,19 +2125,78 @@ pub fn unlink_resource(
         return Err("关联项已被替换为普通文件，拒绝删除".into());
     }
     let actual = fs::read_link(&link_file).map_err(|e| err("读取关联链接失败", e))?;
-    if actual != resolve(&root, resource_path)? {
+    let target = resolve(&root, resource_path)?;
+    if actual != target {
         return Err("关联链接目标已被外部修改，拒绝删除".into());
     }
+    let source_file = if let Some(source_path) = link.source_path.as_deref() {
+        let relative = Path::new(source_path);
+        if relative.is_absolute()
+            || relative
+                .components()
+                .any(|c| !matches!(c, Component::Normal(_)))
+        {
+            return Err("项目原文档路径无效".into());
+        }
+        let source = dir.join(relative);
+        let meta = fs::symlink_metadata(&source).map_err(|e| err("项目原文档软链接缺失", e))?;
+        if !meta.file_type().is_symlink()
+            || fs::read_link(&source).ok().as_deref() != Some(&resolve(&root, resource_path)?)
+        {
+            return Err("项目原文档链接已被修改，拒绝删除".into());
+        }
+        Some(source)
+    } else {
+        None
+    };
     fs::remove_file(&link_file).map_err(|e| err("移除关联链接失败", e))?;
+    if let Some(source) = &source_file {
+        if let Err(e) = fs::remove_file(source) {
+            #[cfg(unix)]
+            let _ = std::os::unix::fs::symlink(&actual, &link_file);
+            return Err(err("移除项目原文档软链接失败", e));
+        }
+    }
     p.resources.remove(i);
     match save_project(&dir, &p) {
         Ok(p) => Ok(p),
         Err(e) => {
             #[cfg(unix)]
-            let _ = std::os::unix::fs::symlink(actual, &link_file);
+            let _ = std::os::unix::fs::symlink(&actual, &link_file);
+            #[cfg(unix)]
+            if let Some(source) = source_file {
+                let _ = std::os::unix::fs::symlink(&target, source);
+            }
             Err(e)
         }
     }
+}
+
+pub fn set_document_source_path(
+    root: impl AsRef<Path>,
+    project_id: &str,
+    resource_path: &str,
+    source_path: &str,
+) -> WorkspaceResult<Project> {
+    let root = root_path(root.as_ref())?;
+    let dir = project_dir(&root, project_id)?;
+    let mut project = read_project(&root, &dir)?;
+    let relative = Path::new(source_path);
+    if source_path.is_empty()
+        || relative.is_absolute()
+        || relative
+            .components()
+            .any(|c| !matches!(c, Component::Normal(_)))
+    {
+        return Err("项目原文档路径无效".into());
+    }
+    let link = project
+        .resources
+        .iter_mut()
+        .find(|link| link.kind == ResourceKind::Document && link.path == resource_path)
+        .ok_or("项目文档关联不存在")?;
+    link.source_path = Some(source_path.to_owned());
+    save_project(&dir, &project)
 }
 
 pub fn rename_resource(
@@ -2011,6 +2287,23 @@ where
                 return Err("重命名后的项目关联名称已存在".into());
             }
             links.push((lp, new_link, r.alias.clone(), alias.to_string()));
+            if let Some(source_path) = r.source_path.as_deref() {
+                let source_link = dir.join(source_path);
+                let source_meta = fs::symlink_metadata(&source_link)
+                    .map_err(|e| err("项目原文档链接缺失，资源未重命名", e))?;
+                if !source_meta.file_type().is_symlink()
+                    || fs::read_link(&source_link).map_err(|e| err("读取项目原文档链接失败", e))?
+                        != src
+                {
+                    return Err("项目原文档链接已被外部修改，资源未重命名".into());
+                }
+                links.push((
+                    source_link.clone(),
+                    source_link,
+                    String::new(),
+                    String::new(),
+                ));
+            }
         }
         work.push((dir, p, config_bytes, links));
     }

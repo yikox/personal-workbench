@@ -12,6 +12,7 @@ export interface BootState { root: string | null; snapshot: Snapshot | null; set
 export interface Document { path: string; content: string; revision: string }
 export interface ImageData { mimeType: string; data: string }
 export interface Entry { name: string; path: string; isDir: boolean }
+export interface DiscoveredDocument { name: string; path: string }
 export interface AgentInfo { id: string; name: string; available: boolean; path: string | null }
 export interface Session { provider: string; id: string; title: string; updatedAt: string; cwd: string; projectId?: string; temporaryId?: string; resumeTarget?: string }
 export interface SessionListResult { sessions: Session[]; errors: string[] }
@@ -48,4 +49,6 @@ export const api = {
   runShortcut: (id: string, projectId?: string) => call<void>('run_shortcut', { id, ...(projectId ? { projectId } : {}) }),
   saveSettings: (settings: Settings) => call<Settings>('save_settings', { settings }), promoteFile: (projectId: string, path: string, kind: ResourceKind, expectedRevision: string) => call<Snapshot>('promote_file', { projectId, path, kind, expectedRevision }),
   recordProjectVisit: (projectId: string) => call<string[]>('record_project_visit', { projectId }),
+  discoverProjectMarkdown: (projectId: string) => call<DiscoveredDocument[]>('discover_project_markdown', { projectId }),
+  associateProjectMarkdown: (projectId: string, path: string, expectedRevision: string) => call<Snapshot>('associate_project_markdown', { projectId, path, expectedRevision }),
 };

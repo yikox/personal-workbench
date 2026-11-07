@@ -1117,6 +1117,158 @@ fn promote_file(
 }
 
 #[tauri::command]
+fn discover_project_markdown(
+    state: State<'_, AppState>,
+    project_id: String,
+) -> Result<Vec<workspace::DiscoveredDocument>> {
+    let root = current_root(&state)?;
+    workspace::discover_markdown(&root, &project_id)
+}
+
+#[tauri::command]
+fn associate_project_markdown(
+    state: State<'_, AppState>,
+    project_id: String,
+    path: String,
+    expected_revision: String,
+) -> Result<Snapshot> {
+    let _guard = lock(&state.mutation)?;
+    let root = current_root(&state)?;
+    associate_project_markdown_in_workspace(&root, &project_id, &path, &expected_revision)
+}
+
+fn associate_project_markdown_in_workspace(
+    root: &Path,
+    project_id: &str,
+    path: &str,
+    expected_revision: &str,
+) -> Result<Snapshot> {
+    let project = project_at(root, project_id)?;
+    if project.revision != expected_revision {
+        return Err("项目配置已被外部修改，请刷新后重试".into());
+    }
+    let project_dir = workspace::resolve_workspace_path(root, &project.path)?;
+    let source = project_dir.join(&path);
+    let relative = Path::new(&path);
+    if path.is_empty()
+        || relative.is_absolute()
+        || relative
+            .components()
+            .any(|c| !matches!(c, std::path::Component::Normal(_)))
+    {
+        return Err("项目文档路径无效".into());
+    }
+    if !workspace::discover_markdown(root, project_id)?
+        .iter()
+        .any(|doc| doc.path == path)
+    {
+        return Err("该 Markdown 文件不再是可关联的普通项目文件，请重新扫描".into());
+    }
+    let meta = fs::symlink_metadata(&source).map_err(|e| format!("读取项目文档失败: {e}"))?;
+    let filename = source
+        .file_name()
+        .and_then(|s| s.to_str())
+        .ok_or("文档名称无效")?;
+    if !meta.is_file()
+        || meta.file_type().is_symlink()
+        || filename.eq_ignore_ascii_case("AGENTS.md")
+        || !(filename.to_ascii_lowercase().ends_with(".md")
+            || filename.to_ascii_lowercase().ends_with(".markdown"))
+    {
+        return Err("只能关联项目内未关联的普通 Markdown 文件".into());
+    }
+    let bytes = fs::read(&source).map_err(|e| format!("读取项目文档失败: {e}"))?;
+    std::str::from_utf8(&bytes).map_err(|_| "Markdown 文档必须是 UTF-8 文本")?;
+    let relative_resource = format!("文档/{filename}");
+    let target = root.join(&relative_resource);
+    let mut output = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&target)
+        .map_err(|e| format!("创建工作台文档失败（可能重名）: {e}"))?;
+    use std::io::Write;
+    if let Err(e) = output.write_all(&bytes).and_then(|()| output.sync_all()) {
+        drop(output);
+        let _ = fs::remove_file(&target);
+        return Err(format!("复制工作台文档失败: {e}"));
+    }
+    let updated = match workspace::link_resource(
+        root,
+        project_id,
+        expected_revision,
+        ResourceKind::Document,
+        &relative_resource,
+        None,
+    ) {
+        Ok(project) => project,
+        Err(e) => {
+            let _ = fs::remove_file(&target);
+            return Err(e);
+        }
+    };
+    let unchanged = fs::read(&source)
+        .map(|current| current == bytes)
+        .unwrap_or(false);
+    if !unchanged {
+        let _ = workspace::unlink_resource(
+            root,
+            project_id,
+            &updated.revision,
+            ResourceKind::Document,
+            &relative_resource,
+        );
+        let _ = fs::remove_file(&target);
+        return Err("项目文档在关联期间发生变化，未移动原文件".into());
+    }
+    if let Err(e) = fs::remove_file(&source) {
+        let _ = workspace::unlink_resource(
+            root,
+            project_id,
+            &updated.revision,
+            ResourceKind::Document,
+            &relative_resource,
+        );
+        let _ = fs::remove_file(&target);
+        return Err(format!("无法移走项目原文档，已尝试清理工作台副本: {e}"));
+    }
+    #[cfg(unix)]
+    if let Err(e) = std::os::unix::fs::symlink(&target, &source) {
+        let _ = fs::write(&source, &bytes);
+        let _ = workspace::unlink_resource(
+            root,
+            project_id,
+            &updated.revision,
+            ResourceKind::Document,
+            &relative_resource,
+        );
+        let _ = fs::remove_file(&target);
+        return Err(format!("创建项目原路径软链接失败，已尝试恢复原文档: {e}"));
+    }
+    #[cfg(not(unix))]
+    return Err("当前平台不支持符号链接".into());
+    if let Err(e) = workspace::set_document_source_path(root, project_id, &relative_resource, path)
+    {
+        if fs::read_link(&source).ok().as_deref() == Some(target.as_path()) {
+            let _ = fs::remove_file(&source);
+            let _ = fs::write(&source, &bytes);
+        }
+        if workspace::unlink_resource(
+            root,
+            project_id,
+            &updated.revision,
+            ResourceKind::Document,
+            &relative_resource,
+        )
+        .is_ok()
+        {
+            let _ = fs::remove_file(&target);
+        }
+        return Err(format!("记录项目原路径失败，已尝试恢复原文档: {e}"));
+    }
+    workspace::snapshot(root)
+}
+
+#[tauri::command]
 fn agent_status(state: State<'_, AppState>) -> Result<Vec<agents::AgentInfo>> {
     Ok(agents::status(&lock(&state.config)?.settings.agent_paths))
 }
@@ -1519,6 +1671,8 @@ pub fn run() {
             read_image,
             open_external,
             promote_file,
+            discover_project_markdown,
+            associate_project_markdown,
             agent_status,
             start_agent,
             list_sessions,
@@ -1622,6 +1776,97 @@ mod tests {
         assert_eq!(
             workspace::snapshot(&root).unwrap().projects[0].resources[0].path,
             resource.path
+        );
+    }
+
+    #[test]
+    fn selected_markdown_is_moved_and_keeps_a_managed_original_path_link() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("workspace");
+        workspace::init_workspace(&root).unwrap();
+        let project = workspace::create_project(&root, "Project", "").unwrap();
+        let project_dir = root.join(&project.path);
+        fs::create_dir_all(project_dir.join("notes")).unwrap();
+        let source = project_dir.join("notes/guide.md");
+        fs::write(&source, "# Shared document\n").unwrap();
+        let snapshot = associate_project_markdown_in_workspace(
+            &root,
+            &project.id,
+            "notes/guide.md",
+            &project.revision,
+        )
+        .unwrap();
+        let managed = root.join("文档/guide.md");
+        assert_eq!(fs::read_to_string(&managed).unwrap(), "# Shared document\n");
+        assert_eq!(fs::read_link(&source).unwrap(), managed);
+        assert_eq!(
+            snapshot.projects[0].resources[0].source_path.as_deref(),
+            Some("notes/guide.md")
+        );
+        let candidates = workspace::discover_markdown(&root, &project.id).unwrap();
+        assert!(candidates.is_empty());
+        assert_eq!(
+            fs::read_to_string(
+                workspace::resolve_workspace_path(
+                    &root,
+                    &format!("{}/notes/guide.md", project.path)
+                )
+                .unwrap()
+            )
+            .unwrap(),
+            "# Shared document\n"
+        );
+    }
+
+    #[test]
+    fn selected_markdown_in_a_registered_repository_can_be_managed() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("workspace");
+        workspace::init_workspace(&root).unwrap();
+        let project = workspace::create_project(&root, "Project", "").unwrap();
+        let repository =
+            workspace::create_resource(&root, ResourceKind::Repository, "Repo").unwrap();
+        let source = root.join(&repository.path).join("ai-workbench-plan.md");
+        fs::write(&source, "# Plan\n").unwrap();
+        let project = workspace::link_resource(
+            &root,
+            &project.id,
+            &project.revision,
+            ResourceKind::Repository,
+            &repository.path,
+            None,
+        )
+        .unwrap();
+        let snapshot = associate_project_markdown_in_workspace(
+            &root,
+            &project.id,
+            "关联仓库/Repo/ai-workbench-plan.md",
+            &project.revision,
+        )
+        .unwrap();
+        let managed = root.join("文档/ai-workbench-plan.md");
+        assert_eq!(fs::read_to_string(&managed).unwrap(), "# Plan\n");
+        assert_eq!(fs::read_link(&source).unwrap(), managed);
+        assert_eq!(
+            snapshot.projects[0]
+                .resources
+                .iter()
+                .find(|link| link.kind == ResourceKind::Document)
+                .unwrap()
+                .source_path
+                .as_deref(),
+            Some("关联仓库/Repo/ai-workbench-plan.md")
+        );
+        assert_eq!(
+            fs::read_to_string(
+                workspace::resolve_workspace_path(
+                    &root,
+                    &format!("{}/关联仓库/Repo/ai-workbench-plan.md", project.path)
+                )
+                .unwrap()
+            )
+            .unwrap(),
+            "# Plan\n"
         );
     }
 

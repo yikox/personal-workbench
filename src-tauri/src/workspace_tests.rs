@@ -76,6 +76,131 @@ fn project_entries_create_only_inside_real_unmanaged_project_directories() {
 }
 
 #[test]
+fn markdown_discovery_skips_hidden_generated_and_symlink_paths() {
+    let td = temp_root();
+    let root = td.path().join("w");
+    init_workspace(&root).unwrap();
+    let project = create_project(&root, "Docs", "").unwrap();
+    let dir = root.join(&project.path);
+    fs::create_dir_all(dir.join("notes/nested")).unwrap();
+    fs::create_dir_all(dir.join(".git")).unwrap();
+    fs::create_dir_all(dir.join("node_modules/pkg")).unwrap();
+    fs::write(dir.join("notes/nested/guide.MD"), "guide").unwrap();
+    fs::write(dir.join(".hidden.md"), "hidden").unwrap();
+    fs::write(dir.join(".git/secret.md"), "git").unwrap();
+    fs::write(dir.join("node_modules/pkg/readme.md"), "dep").unwrap();
+    fs::write(dir.join("ordinary.txt"), "text").unwrap();
+    #[cfg(unix)]
+    {
+        let outside = td.path().join("outside.md");
+        fs::write(&outside, "outside").unwrap();
+        std::os::unix::fs::symlink(&outside, dir.join("linked.md")).unwrap();
+    }
+    let found = discover_markdown(&root, &project.id).unwrap();
+    assert_eq!(
+        found
+            .iter()
+            .map(|doc| doc.path.as_str())
+            .collect::<Vec<_>>(),
+        ["notes/nested/guide.MD"]
+    );
+}
+
+#[test]
+fn markdown_discovery_includes_only_registered_repository_links() {
+    let td = temp_root();
+    let root = td.path().join("w");
+    init_workspace(&root).unwrap();
+    let project = create_project(&root, "Docs", "").unwrap();
+    let repo = create_resource(&root, ResourceKind::Repository, "Repo").unwrap();
+    fs::write(root.join(&repo.path).join("ai-workbench-plan.md"), "plan").unwrap();
+    fs::create_dir_all(root.join(&repo.path).join(".git")).unwrap();
+    fs::write(root.join(&repo.path).join(".git/config.md"), "git").unwrap();
+    let unregistered = create_resource(&root, ResourceKind::Repository, "Other").unwrap();
+    fs::write(root.join(&unregistered.path).join("private.md"), "private").unwrap();
+    link_resource(
+        &root,
+        &project.id,
+        &project.revision,
+        ResourceKind::Repository,
+        &repo.path,
+        None,
+    )
+    .unwrap();
+    let found = discover_markdown(&root, &project.id).unwrap();
+    assert_eq!(
+        found
+            .iter()
+            .map(|doc| doc.path.as_str())
+            .collect::<Vec<_>>(),
+        ["关联仓库/Repo/ai-workbench-plan.md"]
+    );
+}
+
+#[test]
+fn document_original_path_link_is_readable_and_unlink_keeps_managed_document() {
+    let td = temp_root();
+    let root = td.path().join("w");
+    init_workspace(&root).unwrap();
+    let mut project = create_project(&root, "Docs", "").unwrap();
+    let dir = root.join(&project.path);
+    fs::create_dir_all(dir.join("notes/nested")).unwrap();
+    let source = dir.join("notes/nested/guide.md");
+    fs::write(&source, "managed content").unwrap();
+    let resource = create_resource(&root, ResourceKind::Document, "guide.md").unwrap();
+    fs::write(root.join(&resource.path), "managed content").unwrap();
+    project = link_resource(
+        &root,
+        &project.id,
+        &project.revision,
+        ResourceKind::Document,
+        &resource.path,
+        None,
+    )
+    .unwrap();
+    fs::remove_file(&source).unwrap();
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(root.join(&resource.path), &source).unwrap();
+    project = set_document_source_path(&root, &project.id, &resource.path, "notes/nested/guide.md")
+        .unwrap();
+    snapshot(&root).unwrap();
+    assert_eq!(
+        fs::read_to_string(
+            resolve_workspace_path(&root, &format!("{}/notes/nested/guide.md", project.path))
+                .unwrap()
+        )
+        .unwrap(),
+        "managed content"
+    );
+    let renamed =
+        rename_resource(&root, ResourceKind::Document, &resource.path, "renamed.md").unwrap();
+    project = snapshot(&root).unwrap().projects.remove(0);
+    assert_eq!(fs::read_link(&source).unwrap(), root.join(&renamed.path));
+    assert_eq!(
+        fs::read_to_string(
+            resolve_workspace_path(&root, &format!("{}/notes/nested/guide.md", project.path))
+                .unwrap()
+        )
+        .unwrap(),
+        "managed content"
+    );
+    let remaining = unlink_resource(
+        &root,
+        &project.id,
+        &project.revision,
+        ResourceKind::Document,
+        &renamed.path,
+    )
+    .unwrap();
+    assert!(fs::symlink_metadata(source).is_err());
+    assert_eq!(
+        fs::read_to_string(root.join(&renamed.path)).unwrap(),
+        "managed content"
+    );
+    assert!(remaining.resources.is_empty());
+}
+
+#[test]
 fn staged_resources_require_valid_location_type_and_exclusive_destination() {
     let td = temp_root();
     let root = td.path().join("w");
@@ -636,6 +761,7 @@ fn snapshot_creates_and_updates_links_after_external_config_edits() {
         kind: ResourceKind::Document,
         path: first.path.clone(),
         alias: "chosen.md".into(),
+        source_path: None,
     });
     fs::write(&config_path, serde_json::to_vec_pretty(&config).unwrap()).unwrap();
     snapshot(&root).unwrap();
@@ -672,11 +798,13 @@ fn reconciliation_preflights_invalid_targets_and_duplicate_aliases_without_parti
             kind: ResourceKind::Document,
             path: good.path.clone(),
             alias: "new.md".into(),
+            source_path: None,
         },
         ResourceLink {
             kind: ResourceKind::Document,
             path: "../outside.md".into(),
             alias: "invalid.md".into(),
+            source_path: None,
         },
     ];
     fs::write(&config_path, serde_json::to_vec_pretty(&config).unwrap()).unwrap();
@@ -692,11 +820,13 @@ fn reconciliation_preflights_invalid_targets_and_duplicate_aliases_without_parti
             kind: ResourceKind::Document,
             path: good.path.clone(),
             alias: "same.md".into(),
+            source_path: None,
         },
         ResourceLink {
             kind: ResourceKind::Document,
             path: good.path.clone(),
             alias: "same.md".into(),
+            source_path: None,
         },
     ];
     fs::write(&config_path, serde_json::to_vec_pretty(&config).unwrap()).unwrap();
@@ -718,6 +848,7 @@ fn reconciliation_never_removes_an_unclassifiable_link_or_overwrites_plain_files
         kind: ResourceKind::Document,
         path: resource.path.clone(),
         alias: "blocked.md".into(),
+        source_path: None,
     });
     fs::write(&config_path, serde_json::to_vec_pretty(&config).unwrap()).unwrap();
     let blocked = root.join(&project.path).join("关联文档/blocked.md");
@@ -855,6 +986,7 @@ fn missing_association_error_names_project_and_resource_without_partial_link_cha
         kind: ResourceKind::Document,
         path: resource.path.clone(),
         alias: "generated.md".into(),
+        source_path: None,
     });
     fs::write(
         &good_config_path,
@@ -871,6 +1003,7 @@ fn missing_association_error_names_project_and_resource_without_partial_link_cha
         kind: ResourceKind::Document,
         path: missing_path.into(),
         alias: "absent.md".into(),
+        source_path: None,
     });
     fs::write(
         &broken_config_path,
@@ -908,6 +1041,7 @@ fn snapshot_rejects_duplicate_project_uuids_before_changing_links() {
         kind: ResourceKind::Document,
         path: resource.path.clone(),
         alias: "pending.md".into(),
+        source_path: None,
     });
     fs::write(
         &first_config_path,
@@ -955,6 +1089,7 @@ fn snapshot_rejects_duplicate_temporary_uuids_before_changing_links() {
         kind: ResourceKind::Document,
         path: resource.path.clone(),
         alias: "pending.md".into(),
+        source_path: None,
     });
     fs::write(
         &project_config_path,
@@ -1012,6 +1147,7 @@ fn snapshot_rejects_invalid_project_uuid_with_config_path_before_reconciliation(
         kind: ResourceKind::Document,
         path: resource.path.clone(),
         alias: "pending.md".into(),
+        source_path: None,
     });
     fs::write(
         &first_config_path,
