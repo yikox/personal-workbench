@@ -1,0 +1,28 @@
+{
+  "name": "personal-workbench",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1 --port 1420 --strictPort",
+    "build": "tsc --noEmit && vite build",
+    "test": "node --test src-tauri/resources/*.test.mjs",
+    "tauri": "tauri"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "0.3.232",
+    "@tauri-apps/api": "2.11.1",
+    "lucide-react": "0.546.0",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
+    "react-markdown": "10.1.0"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "2.11.4",
+    "@types/react": "19.2.18",
+    "@types/react-dom": "19.2.3",
+    "@vitejs/plugin-react": "4.7.0",
+    "typescript": "5.9.3",
+    "vite": "6.4.3"
+  }
+}

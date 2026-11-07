@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>AI 工作台 · 本地界面预览</title>
+  <link rel="stylesheet" href="styles.css">
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <div class="window-frame">
+    <aside class="sidebar" aria-label="主导航">
+      <div class="brand">
+        <div class="brand-mark" aria-hidden="true"><span></span><span></span><span></span><span></span></div>
+        <div><div class="brand-name">AI 工作台</div><div class="brand-caption">本地桌面预览</div></div>
+      </div>
+
+      <div class="workspace-label">工作区</div>
+      <nav class="primary-nav">
+        <button class="nav-item active" data-page="home" aria-label="首页" title="首页"><span class="nav-icon" data-icon="home"></span><span>首页</span></button>
+        <button class="nav-item" data-page="resources" data-category="repo" aria-label="Git 管理" title="Git 管理"><span class="nav-icon" data-icon="branch"></span><span>Git 管理</span></button>
+        <button class="nav-item" data-page="resources" data-category="doc" aria-label="文档管理" title="文档管理"><span class="nav-icon" data-icon="file"></span><span>文档管理</span></button>
+        <button class="nav-item" data-page="resources" data-category="attachment" aria-label="附件管理" title="附件管理"><span class="nav-icon" data-icon="image"></span><span>附件管理</span></button>
+        <button class="nav-item" data-page="shortcuts" aria-label="快捷按钮" title="快捷按钮"><span class="nav-icon" data-icon="spark"></span><span>快捷按钮</span></button>
+      </nav>
+
+      <div class="sidebar-section-heading"><span>项目目录</span><button class="icon-button small" data-action="new-project" aria-label="新建项目" title="新建项目"><span data-icon="plus"></span></button><button class="icon-button small project-directory-mobile" data-action="show-project-directory" aria-label="打开项目目录" title="项目目录"><span data-icon="folder"></span></button></div>
+      <div class="project-nav-list" id="sidebar-projects"></div>
+
+      <div class="sidebar-bottom">
+        <button class="profile-button" data-page="settings" aria-label="设置" title="设置"><span class="avatar" data-icon="settings"></span><span><strong>设置</strong><small>工作台偏好</small></span></button>
+      </div>
+    </aside>
+
+    <main class="main-shell">
+      <header class="topbar">
+        <div class="breadcrumbs" id="breadcrumbs"></div>
+        <div class="topbar-actions">
+          <button class="icon-button search-trigger" data-action="search" aria-label="搜索工作台" title="搜索"><span data-icon="search"></span><kbd>⌘ K</kbd></button>
+          <button class="help-button" data-action="help"><span data-icon="help"></span><span>预览说明</span></button>
+        </div>
+      </header>
+      <section id="app-view" class="app-view" tabindex="-1"></section>
+    </main>
+  </div>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <div id="modal-root"></div>
+</body>
+</html>
