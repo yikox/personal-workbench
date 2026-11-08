@@ -138,6 +138,52 @@ fn markdown_discovery_includes_only_registered_repository_links() {
 }
 
 #[test]
+fn markdown_discovery_includes_unlinked_workspace_documents_for_direct_association() {
+    let td = temp_root();
+    let root = td.path().join("w");
+    init_workspace(&root).unwrap();
+    let first = create_project(&root, "First", "").unwrap();
+    let second = create_project(&root, "Second", "").unwrap();
+    let plan = create_resource(&root, ResourceKind::Document, "development-plan.md").unwrap();
+    fs::write(root.join(&plan.path), "# Plan").unwrap();
+    let ordinary = create_resource(&root, ResourceKind::Document, "notes.txt").unwrap();
+    fs::write(root.join(&ordinary.path), "plain text").unwrap();
+    fs::write(root.join("文档/.hidden.md"), "hidden").unwrap();
+    fs::write(root.join("文档/AGENTS.md"), "rules").unwrap();
+    #[cfg(unix)]
+    {
+        let outside = td.path().join("outside.md");
+        fs::write(&outside, "outside").unwrap();
+        std::os::unix::fs::symlink(&outside, root.join("文档/linked.md")).unwrap();
+    }
+
+    let found = discover_markdown(&root, &first.id).unwrap();
+    assert!(found.iter().any(|doc| doc.path == plan.path));
+    assert!(!found.iter().any(|doc| doc.path == ordinary.path));
+    assert!(!found.iter().any(|doc| doc.path == "文档/.hidden.md"));
+    assert!(!found.iter().any(|doc| doc.path == "文档/AGENTS.md"));
+    assert!(!found.iter().any(|doc| doc.path == "文档/linked.md"));
+
+    let first = link_resource(
+        &root,
+        &first.id,
+        &first.revision,
+        ResourceKind::Document,
+        &plan.path,
+        None,
+    )
+    .unwrap();
+    assert!(!discover_markdown(&root, &first.id)
+        .unwrap()
+        .iter()
+        .any(|doc| doc.path == plan.path));
+    assert!(discover_markdown(&root, &second.id)
+        .unwrap()
+        .iter()
+        .any(|doc| doc.path == plan.path));
+}
+
+#[test]
 fn document_original_path_link_is_readable_and_unlink_keeps_managed_document() {
     let td = temp_root();
     let root = td.path().join("w");

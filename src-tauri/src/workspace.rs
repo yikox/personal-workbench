@@ -988,6 +988,40 @@ pub fn discover_markdown(
     let project = read_project(&root, &dir)?;
     let mut docs = Vec::new();
     walk_markdown(&dir, &dir, "", &mut docs)?;
+
+    // Existing Markdown resources in the workbench library are linkable, not movable.
+    // Keep only direct, ordinary files that are not already associated with this project.
+    let document_dir = root.join(ResourceKind::Document.category());
+    for entry in fs::read_dir(&document_dir).map_err(|e| err("读取工作台文档目录失败", e))?
+    {
+        let path = entry.map_err(|e| err("读取工作台文档目录失败", e))?.path();
+        let name = path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .ok_or("工作台文档名称不是有效 UTF-8")?;
+        let meta = fs::symlink_metadata(&path).map_err(|e| err("读取工作台文档信息失败", e))?;
+        if !meta.is_file()
+            || meta.file_type().is_symlink()
+            || name.starts_with('.')
+            || name.eq_ignore_ascii_case("AGENTS.md")
+            || !(name.to_ascii_lowercase().ends_with(".md")
+                || name.to_ascii_lowercase().ends_with(".markdown"))
+        {
+            continue;
+        }
+        let resource_path = format!("{}/{name}", ResourceKind::Document.category());
+        if !project
+            .resources
+            .iter()
+            .any(|link| link.kind == ResourceKind::Document && link.path == resource_path)
+        {
+            docs.push(DiscoveredDocument {
+                name: name.into(),
+                path: resource_path,
+            });
+        }
+    }
+
     for link in project
         .resources
         .iter()

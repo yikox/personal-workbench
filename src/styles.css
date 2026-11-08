@@ -77,8 +77,10 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 3px
 .empty-state { padding: 24px 15px; text-align: center; color: #a39faa; font-size: 12px; }
 
 .app-view.doc-notes-view { display: flex; overflow: hidden; padding: 0; }
-.notes-workspace { display: grid; grid-template-columns: minmax(230px, 30%) minmax(0, 1fr); flex: 1; width: 100%; height: 100%; min-height: 0; overflow: hidden; background: #fff; }
-.notes-list-pane { min-width: 0; min-height: 0; display: flex; flex-direction: column; border-right: 1px solid #eeecf0; background: #fdfcfd; }
+.notes-workspace { display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); flex: 1; width: 100%; height: 100%; min-height: 0; overflow: hidden; background: #fff; }
+.notes-list-pane { min-width: 0; min-height: 0; display: flex; flex-direction: column; background: #fdfcfd; }
+.notes-workspace.notes-detail-open .notes-list-pane, .notes-workspace:not(.notes-detail-open) .notes-detail-pane { display: none; }
+.notes-back { flex: 0 0 auto; }
 .notes-list-head { display: flex; justify-content: space-between; align-items: center; padding: 15px 15px 10px; }
 .notes-list-head > div { display: flex; align-items: baseline; gap: 8px; }
 .notes-list-head > .notes-list-actions { align-items: center; gap: 9px; }
@@ -120,7 +122,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 3px
   .resources-layout { grid-template-columns: minmax(230px,.85fr) minmax(280px,1.15fr); }
 }
 @media (max-width: 680px) {
-  .window-frame { min-height: 100vh; height: 100vh; }.topbar { height: 50px; flex-basis: 50px; padding: 0 12px; }.help-button span:last-child, .search-trigger kbd { display: none; }.app-view { padding: 18px 13px 24px; }.app-view.doc-notes-view { display: block; overflow: auto; padding: 0; }.page-head { flex-direction: column; gap: 10px; margin-bottom: 17px; }.page-title { font-size: 20px; }.home-hero { align-items: flex-start; flex-direction: column; gap: 14px; padding: 18px; }.hero-actions { padding-left: 0; }.home-lower, .resources-layout { grid-template-columns: 1fr; }.project-cards { grid-template-columns: 1fr; }.project-card-desc { min-height: 0; }.shortcut-grid { grid-template-columns: repeat(2,minmax(0,1fr)); }.resources-layout { min-height: auto; }.resource-detail { min-height: 290px; }.notes-workspace { height: auto; min-height: 0; grid-template-columns: minmax(0, 1fr); overflow: visible; }.notes-list-pane { height: min(250px, 40vh); max-height: none; border-right: 0; border-bottom: 1px solid #eeecf0; }.notes-detail-pane { min-height: 440px; }.notes-detail-pane .resource-detail { height: auto; min-height: 440px; }.workspace-status { display: none; }
+  .window-frame { min-height: 100vh; height: 100vh; }.topbar { height: 50px; flex-basis: 50px; padding: 0 12px; }.help-button span:last-child, .search-trigger kbd { display: none; }.app-view { padding: 18px 13px 24px; }.app-view.doc-notes-view { display: flex; overflow: hidden; padding: 0; }.page-head { flex-direction: column; gap: 10px; margin-bottom: 17px; }.page-title { font-size: 20px; }.home-hero { align-items: flex-start; flex-direction: column; gap: 14px; padding: 18px; }.hero-actions { padding-left: 0; }.home-lower, .resources-layout { grid-template-columns: 1fr; }.project-cards { grid-template-columns: 1fr; }.project-card-desc { min-height: 0; }.shortcut-grid { grid-template-columns: repeat(2,minmax(0,1fr)); }.resources-layout { min-height: auto; }.resource-detail { min-height: 290px; }.notes-workspace { height: 100%; min-height: 0; grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); overflow: hidden; }.notes-list-pane { height: 100%; max-height: none; }.notes-detail-pane { min-height: 0; }.notes-detail-pane .resource-detail { height: 100%; min-height: 0; }.workspace-status { display: none; }
 }
 
 /* 独立附件页、快捷按钮脚本视图与示例设置页 */
@@ -193,3 +195,12 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 3px
 .session-status-row { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding: 9px 10px; margin: 5px 0; font-size: 12px; }.session-status-row strong { color: #625e69; }.session-status-row span { flex: 1; min-width: 160px; }.session-status-row.error-card { justify-content: space-between; }.session-status-row .quiet-link { flex: 0 0 auto; }.project-rule-label { flex: 0 0 auto; padding: 4px 7px; border-radius: 6px; background: #f3f0fa; color: #6f61bd; font-size: 11px; }
 .settings-row .modal-input { width: min(250px, 42vw); }.section-row { margin-top: 22px; }.empty-state { line-height: 1.65; }
 @media (max-width: 680px) { .resources-layout { grid-template-columns: 1fr; }.resource-detail > .markdown-preview { max-height: none; }.resource-detail > .markdown-editor { min-height: 230px; }.inline-error { margin: 8px 12px 0; }.setup-card { padding: 24px; }.settings-row .modal-input { width: 100%; } }
+
+.markdown-editor-shell { min-width: 0; min-height: 0; overflow: hidden; }
+.markdown-loading { display: grid; min-height: 180px; place-items: center; color: #9a96a0; font-size: 12px; }
+.resource-detail > .markdown-editor-shell { height: min(68vh, 720px); min-height: 360px; }
+.markdown-editor-shell .w-md-editor { width: 100%; height: 100% !important; border: 0; border-radius: 0; box-shadow: none; }
+.markdown-preview .wmde-markdown { color: inherit; background: transparent; font-size: inherit; line-height: inherit; }
+.notes-detail-pane .markdown-editor-shell { flex: 1; height: 100%; min-height: 0; }
+.notes-detail-pane .markdown-editor-shell .w-md-editor { min-height: 0; }
+@media (max-width: 680px) { .resource-detail > .markdown-editor-shell { height: 58vh; min-height: 250px; } }

@@ -1147,8 +1147,6 @@ fn associate_project_markdown_in_workspace(
     if project.revision != expected_revision {
         return Err("项目配置已被外部修改，请刷新后重试".into());
     }
-    let project_dir = workspace::resolve_workspace_path(root, &project.path)?;
-    let source = project_dir.join(&path);
     let relative = Path::new(&path);
     if path.is_empty()
         || relative.is_absolute()
@@ -1162,8 +1160,24 @@ fn associate_project_markdown_in_workspace(
         .iter()
         .any(|doc| doc.path == path)
     {
-        return Err("该 Markdown 文件不再是可关联的普通项目文件，请重新扫描".into());
+        return Err("该 Markdown 文件已不存在、已关联或不在可发现范围内，请重新扫描".into());
     }
+    if path.starts_with("文档/") {
+        if relative.components().count() != 2 {
+            return Err("工作台文档资源路径无效".into());
+        }
+        workspace::link_resource(
+            root,
+            project_id,
+            expected_revision,
+            ResourceKind::Document,
+            &path,
+            None,
+        )?;
+        return workspace::snapshot(root);
+    }
+    let project_dir = workspace::resolve_workspace_path(root, &project.path)?;
+    let source = project_dir.join(&path);
     let meta = fs::symlink_metadata(&source).map_err(|e| format!("读取项目文档失败: {e}"))?;
     let filename = source
         .file_name()
@@ -1777,6 +1791,54 @@ mod tests {
             workspace::snapshot(&root).unwrap().projects[0].resources[0].path,
             resource.path
         );
+    }
+
+    #[test]
+    fn selected_workspace_markdown_is_linked_without_moving_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("workspace");
+        workspace::init_workspace(&root).unwrap();
+        let project = workspace::create_project(&root, "Project", "").unwrap();
+        let document =
+            workspace::create_resource(&root, ResourceKind::Document, "development-plan.md")
+                .unwrap();
+        let content = "# Development plan\n";
+        fs::write(root.join(&document.path), content).unwrap();
+        assert!(workspace::discover_markdown(&root, &project.id)
+            .unwrap()
+            .iter()
+            .any(|doc| doc.path == document.path));
+
+        let snapshot = associate_project_markdown_in_workspace(
+            &root,
+            &project.id,
+            &document.path,
+            &project.revision,
+        )
+        .unwrap();
+        let managed = root.join(&document.path);
+        let project_link = root
+            .join(&snapshot.projects[0].path)
+            .join("关联文档/development-plan.md");
+        assert_eq!(fs::read_to_string(&managed).unwrap(), content);
+        assert_eq!(fs::read_link(&project_link).unwrap(), managed);
+        assert_eq!(snapshot.projects[0].resources[0].source_path, None);
+        assert!(workspace::discover_markdown(&root, &project.id)
+            .unwrap()
+            .iter()
+            .all(|doc| doc.path != document.path));
+
+        let unlinked = workspace::unlink_resource(
+            &root,
+            &project.id,
+            &snapshot.projects[0].revision,
+            ResourceKind::Document,
+            &document.path,
+        )
+        .unwrap();
+        assert!(unlinked.resources.is_empty());
+        assert!(managed.is_file());
+        assert!(!project_link.exists());
     }
 
     #[test]
